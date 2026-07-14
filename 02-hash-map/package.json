@@ -1,0 +1,17 @@
+{
+  "name": "hash-map",
+  "version": "1.0.0",
+  "description": "A hash-map implementation with an injectable hash function, upsert semantics, and a bounded size limit",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2"
+  }
+}
