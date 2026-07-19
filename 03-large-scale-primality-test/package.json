@@ -1,0 +1,17 @@
+{
+  "name": "large-scale-primality-test",
+  "version": "1.0.0",
+  "description": "Count how many lines in a huge file of integers are prime, using all CPU cores",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2"
+  }
+}
