@@ -4,3 +4,5 @@ input_100mb.txt
 input_100mb.txt.7z
 output.txt
 *.tmp
+nums_50_mil.txt
+nums_200_mil.txt
