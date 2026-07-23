@@ -1,5 +1,7 @@
 node_modules/
 dist/
+storage/
+.DS_Store
 input_100mb.txt
 input_100mb.txt.7z
 output.txt
