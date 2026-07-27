@@ -1,3 +1,5 @@
+import type { IncomingHttpHeaders } from 'node:http';
+import { pipeline } from 'node:stream/promises';
 import {
   Controller,
   Delete,
@@ -9,7 +11,6 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import type { IncomingHttpHeaders } from 'node:http';
 import type { Request, Response } from 'express';
 import * as mime from 'mime-types';
 import { BlobsService } from './blobs.service';
@@ -36,32 +37,30 @@ export class BlobsController {
   @Post(':id')
   @HttpCode(204)
   async upsert(@Param('id') id: string, @Req() req: Request): Promise<void> {
-    const chunks: Buffer[] = [];
-    for await (const chunk of req) {
-      chunks.push(chunk as Buffer);
-    }
-    const data = Buffer.concat(chunks);
     const headers = extractStorableHeaders(req.headers);
-    await this.blobs.put(id, data, headers, req.headers['content-length']);
+    // req is the raw request stream itself - the service pipes it
+    // straight to disk rather than us buffering it into memory here.
+    await this.blobs.put(id, req, headers, req.headers['content-length']);
   }
 
   @Get(':id')
   async fetch(@Param('id') id: string, @Res() res: Response): Promise<void> {
-    const blob = await this.blobs.get(id);
-    if (!blob) {
+    const headers = await this.blobs.getHeaders(id);
+    if (headers === null) {
       throw new NotFoundException();
     }
-    const headers = { ...blob.headers };
-    if (!('content-type' in headers)) {
-      const inferred = mime.lookup(id);
-      if (inferred) {
-        headers['content-type'] = inferred;
-      }
+    const responseHeaders = { ...headers };
+    if (!('content-type' in responseHeaders)) {
+      // Streaming via pipeline() writes the body directly, so we lose
+      // Express's res.send(buffer) side effect of defaulting Content-Type
+      // to application/octet-stream - that fallback has to be explicit now.
+      responseHeaders['content-type'] = mime.lookup(id) || 'application/octet-stream';
     }
-    for (const [key, value] of Object.entries(headers)) {
+    for (const [key, value] of Object.entries(responseHeaders)) {
       res.setHeader(key, value);
     }
-    res.status(200).send(blob.data);
+    res.status(200);
+    await pipeline(this.blobs.createReadStream(id), res);
   }
 
   @Delete(':id')
