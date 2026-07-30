@@ -13,6 +13,7 @@ import {
   PayloadTooLargeException,
 } from '@nestjs/common';
 import { BLOB_CONFIG, BlobLimits } from '../config';
+import { shardFor } from './sharding';
 
 const VALID_ID = /^[a-zA-Z0-9._-]+$/;
 
@@ -20,7 +21,7 @@ const VALID_ID = /^[a-zA-Z0-9._-]+$/;
 // dir) so the final commit is a same-filesystem rename, which is what
 // keeps it atomic. It's excluded by name everywhere storageDir gets
 // scanned, so an in-progress or orphaned upload never counts toward
-// quota/blob-count - see listStorageEntries below.
+// quota/blob-count - see listShardNames below.
 const TMP_DIR_NAME = '.tmp';
 
 @Injectable()
@@ -45,13 +46,15 @@ export class BlobsService implements OnModuleInit {
     // legitimate is ever still sitting here after a clean shutdown.
     await fsp.rm(this.tmpDir(), { recursive: true, force: true });
 
-    const names = await this.listStorageEntries();
     let usage = 0;
     let count = 0;
-    for (const name of names) {
-      usage += await this.statSize(path.join(this.limits.storageDir, name));
-      if (name.endsWith('.data')) {
-        count += 1;
+    for (const shardName of await this.listShardNames()) {
+      const shardPath = path.join(this.limits.storageDir, shardName);
+      for (const fileName of await fsp.readdir(shardPath)) {
+        usage += await this.statSize(path.join(shardPath, fileName));
+        if (fileName.endsWith('.data')) {
+          count += 1;
+        }
       }
     }
     this.usageBytes = usage;
@@ -103,7 +106,7 @@ export class BlobsService implements OnModuleInit {
       await this.streamToFile(body, tempDataPath);
       await fsp.writeFile(tempMetaPath, metaContent);
 
-      await fsp.mkdir(this.limits.storageDir, { recursive: true });
+      await fsp.mkdir(this.shardDir(id), { recursive: true });
       // Two renames, not one - a crash landing exactly between them
       // leaves data/headers from different versions. That window is a
       // metadata-only rename (microseconds) sitting after the much
@@ -169,7 +172,7 @@ export class BlobsService implements OnModuleInit {
     await pipeline(body, fs.createWriteStream(dest));
   }
 
-  private async listStorageEntries(): Promise<string[]> {
+  private async listShardNames(): Promise<string[]> {
     try {
       const names = await fsp.readdir(this.limits.storageDir);
       return names.filter((name) => name !== TMP_DIR_NAME);
@@ -237,11 +240,19 @@ export class BlobsService implements OnModuleInit {
     }
   }
 
+  // MAX_BLOBS_IN_FOLDER (level 3): blobs are bucketed into a shard folder
+  // derived purely from `id`, so every read/write/delete recomputes the
+  // same path with no index to maintain. See sharding.ts for why the
+  // bucket count is fixed rather than tied to overridable config.
+  private shardDir(id: string): string {
+    return path.join(this.limits.storageDir, shardFor(id));
+  }
+
   private dataPath(id: string): string {
-    return path.join(this.limits.storageDir, `${id}.data`);
+    return path.join(this.shardDir(id), `${id}.data`);
   }
 
   private metaPath(id: string): string {
-    return path.join(this.limits.storageDir, `${id}.meta.json`);
+    return path.join(this.shardDir(id), `${id}.meta.json`);
   }
 }
