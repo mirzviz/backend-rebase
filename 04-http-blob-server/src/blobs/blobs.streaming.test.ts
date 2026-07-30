@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { test } from 'node:test';
 import request from 'supertest';
 import { createTestApp, postInTwoParts } from '../testHelpers';
+import { shardFor } from './sharding';
 
 test('a partial temp file is visible on disk while an upload is still in flight', async (t) => {
   const ctx = await createTestApp();
@@ -29,7 +30,8 @@ test('a partial temp file is visible on disk while an upload is still in flight'
     }
     // The real, committed file must not exist yet - the rename only
     // happens after the whole upload finishes.
-    assert.equal(fs.existsSync(path.join(ctx.storageDir, 'big-upload.data')), false);
+    const committedPath = path.join(ctx.storageDir, shardFor('big-upload'), 'big-upload.blob');
+    assert.equal(fs.existsSync(committedPath), false);
   });
 
   assert.equal(sawPartialTempFile, true);

@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import { BLOB_CONFIG, BlobLimits } from '../config';
 import { shardFor } from './sharding';
+import { encodeHeaderPrefix, readHeaderPrefix } from './envelope';
 
 const VALID_ID = /^[a-zA-Z0-9._-]+$/;
 
@@ -23,6 +24,11 @@ const VALID_ID = /^[a-zA-Z0-9._-]+$/;
 // scanned, so an in-progress or orphaned upload never counts toward
 // quota/blob-count - see listShardNames below.
 const TMP_DIR_NAME = '.tmp';
+
+export interface Blob {
+  headers: Record<string, string>;
+  stream: fs.ReadStream;
+}
 
 @Injectable()
 export class BlobsService implements OnModuleInit {
@@ -52,7 +58,7 @@ export class BlobsService implements OnModuleInit {
       const shardPath = path.join(this.limits.storageDir, shardName);
       for (const fileName of await fsp.readdir(shardPath)) {
         usage += await this.statSize(path.join(shardPath, fileName));
-        if (fileName.endsWith('.data')) {
+        if (fileName.endsWith('.blob')) {
           count += 1;
         }
       }
@@ -71,13 +77,13 @@ export class BlobsService implements OnModuleInit {
     this.validateId(id);
     this.validateHeaders(headers);
 
-    const dataPath = this.dataPath(id);
-    const metaPath = this.metaPath(id);
+    const blobPath = this.blobPath(id);
     const metaContent = JSON.stringify({ headers });
+    const headerPrefix = encodeHeaderPrefix(metaContent);
 
-    const isNewBlob = !(await this.pathExists(dataPath));
-    const oldSize = (await this.statSize(dataPath)) + (await this.statSize(metaPath));
-    const declaredNewSize = declaredLength + Buffer.byteLength(metaContent);
+    const isNewBlob = !(await this.pathExists(blobPath));
+    const oldSize = await this.statSize(blobPath);
+    const declaredNewSize = headerPrefix.length + declaredLength;
 
     // Check-and-reserve as one synchronous stretch, with no `await` in
     // between: a concurrent put() for a *different* id can only ever run
@@ -99,26 +105,19 @@ export class BlobsService implements OnModuleInit {
     }
 
     await fsp.mkdir(this.tmpDir(), { recursive: true });
-    const tempDataPath = path.join(this.tmpDir(), `${randomUUID()}.data`);
-    const tempMetaPath = path.join(this.tmpDir(), `${randomUUID()}.meta.json`);
+    const tempPath = path.join(this.tmpDir(), `${randomUUID()}.blob`);
 
     try {
-      await this.streamToFile(body, tempDataPath);
-      await fsp.writeFile(tempMetaPath, metaContent);
-
+      await this.streamToFile(headerPrefix, body, tempPath);
       await fsp.mkdir(this.shardDir(id), { recursive: true });
-      // Two renames, not one - a crash landing exactly between them
-      // leaves data/headers from different versions. That window is a
-      // metadata-only rename (microseconds) sitting after the much
-      // larger data-streaming window this try/catch already covers, so
-      // it's accepted here rather than closed with a combined envelope
-      // file - see the design discussion for the full trade-off.
-      await fsp.rename(tempDataPath, dataPath);
-      await fsp.rename(tempMetaPath, metaPath);
+      // A single rename commits the whole envelope (headers + payload)
+      // atomically - unlike a data-file/meta-file pair, there is no
+      // window where a crash can leave new data paired with old or
+      // missing headers. It either lands completely or not at all.
+      await fsp.rename(tempPath, blobPath);
       // Totals were already reserved above - nothing left to update here.
     } catch (err) {
-      await fsp.rm(tempDataPath, { force: true });
-      await fsp.rm(tempMetaPath, { force: true });
+      await fsp.rm(tempPath, { force: true });
       // The write never actually landed - give back the reservation.
       // This is a fixed-amount correction, not a fresh check-then-act
       // against the current value, so it's safe regardless of what any
@@ -131,27 +130,30 @@ export class BlobsService implements OnModuleInit {
     }
   }
 
-  async getHeaders(id: string): Promise<Record<string, string> | null> {
-    if (!(await this.pathExists(this.dataPath(id)))) {
+  async getBlob(id: string): Promise<Blob | null> {
+    const blobPath = this.blobPath(id);
+    if (!(await this.pathExists(blobPath))) {
       return null;
     }
-    const metaRaw = await fsp.readFile(this.metaPath(id), 'utf8');
-    const { headers } = JSON.parse(metaRaw) as { headers: Record<string, string> };
-    return headers;
-  }
 
-  createReadStream(id: string): fs.ReadStream {
-    return fs.createReadStream(this.dataPath(id));
+    const fileHandle = await fsp.open(blobPath, 'r');
+    let headers: Record<string, string>;
+    let payloadOffset: number;
+    try {
+      ({ headers, payloadOffset } = await readHeaderPrefix(fileHandle));
+    } finally {
+      await fileHandle.close();
+    }
+
+    return { headers, stream: fs.createReadStream(blobPath, { start: payloadOffset }) };
   }
 
   async remove(id: string): Promise<void> {
-    const dataPath = this.dataPath(id);
-    const metaPath = this.metaPath(id);
-    const existed = await this.pathExists(dataPath);
-    const size = existed ? (await this.statSize(dataPath)) + (await this.statSize(metaPath)) : 0;
+    const blobPath = this.blobPath(id);
+    const existed = await this.pathExists(blobPath);
+    const size = existed ? await this.statSize(blobPath) : 0;
 
-    await fsp.rm(dataPath, { force: true });
-    await fsp.rm(metaPath, { force: true });
+    await fsp.rm(blobPath, { force: true });
 
     if (existed) {
       this.usageBytes -= size;
@@ -160,7 +162,8 @@ export class BlobsService implements OnModuleInit {
   }
 
   // Streams the request body straight to disk instead of buffering it in
-  // memory first. No independent byte-cap here: validateContentLength
+  // memory first, right behind the small header prefix written ahead of
+  // it. No independent byte-cap on the body here: validateContentLength
   // already rejected anything over MAX_PAYLOAD_LENGTH before this method
   // is ever called, and Node's HTTP server enforces the declared
   // Content-Length as a hard boundary on what req can ever deliver - so
@@ -168,8 +171,10 @@ export class BlobsService implements OnModuleInit {
   // bytes than were already validated. Adding a second check here would
   // be defending against something already proven impossible on the one
   // path that calls this.
-  private async streamToFile(body: Readable, dest: string): Promise<void> {
-    await pipeline(body, fs.createWriteStream(dest));
+  private async streamToFile(headerPrefix: Buffer, body: Readable, dest: string): Promise<void> {
+    const writeStream = fs.createWriteStream(dest);
+    writeStream.write(headerPrefix);
+    await pipeline(body, writeStream);
   }
 
   private async listShardNames(): Promise<string[]> {
@@ -248,11 +253,7 @@ export class BlobsService implements OnModuleInit {
     return path.join(this.limits.storageDir, shardFor(id));
   }
 
-  private dataPath(id: string): string {
-    return path.join(this.shardDir(id), `${id}.data`);
-  }
-
-  private metaPath(id: string): string {
-    return path.join(this.shardDir(id), `${id}.meta.json`);
+  private blobPath(id: string): string {
+    return path.join(this.shardDir(id), `${id}.blob`);
   }
 }

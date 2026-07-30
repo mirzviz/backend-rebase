@@ -45,11 +45,11 @@ export class BlobsController {
 
   @Get(':id')
   async fetch(@Param('id') id: string, @Res() res: Response): Promise<void> {
-    const headers = await this.blobs.getHeaders(id);
-    if (headers === null) {
+    const blob = await this.blobs.getBlob(id);
+    if (blob === null) {
       throw new NotFoundException();
     }
-    const responseHeaders = { ...headers };
+    const responseHeaders = { ...blob.headers };
     if (!('content-type' in responseHeaders)) {
       // Streaming via pipeline() writes the body directly, so we lose
       // Express's res.send(buffer) side effect of defaulting Content-Type
@@ -60,7 +60,7 @@ export class BlobsController {
       res.setHeader(key, value);
     }
     res.status(200);
-    await pipeline(this.blobs.createReadStream(id), res);
+    await pipeline(blob.stream, res);
   }
 
   @Delete(':id')

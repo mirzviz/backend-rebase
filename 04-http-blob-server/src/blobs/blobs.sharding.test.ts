@@ -13,9 +13,18 @@ test('a stored blob is placed under its computed shard folder, not directly in s
   await request(ctx.baseUrl).post('/blobs/my-file.txt').send(Buffer.from('content')).expect(204);
 
   const shard = shardFor('my-file.txt');
-  assert.equal(fs.existsSync(path.join(ctx.storageDir, shard, 'my-file.txt.data')), true);
-  assert.equal(fs.existsSync(path.join(ctx.storageDir, shard, 'my-file.txt.meta.json')), true);
-  assert.equal(fs.existsSync(path.join(ctx.storageDir, 'my-file.txt.data')), false);
+  assert.equal(fs.existsSync(path.join(ctx.storageDir, shard, 'my-file.txt.blob')), true);
+  assert.equal(fs.existsSync(path.join(ctx.storageDir, 'my-file.txt.blob')), false);
+});
+
+test('a stored blob is exactly one file, not a data/metadata pair', async (t) => {
+  const ctx = await createTestApp();
+  t.after(ctx.cleanup);
+
+  await request(ctx.baseUrl).post('/blobs/single-file').send(Buffer.from('content')).expect(204);
+
+  const shardFiles = fs.readdirSync(path.join(ctx.storageDir, shardFor('single-file')));
+  assert.deepEqual(shardFiles, ['single-file.blob']);
 });
 
 test('GET and DELETE resolve to the same shard the blob was written into', async (t) => {
@@ -28,7 +37,7 @@ test('GET and DELETE resolve to the same shard the blob was written into', async
 
   await request(ctx.baseUrl).delete('/blobs/round-trip').expect(204);
   const shard = shardFor('round-trip');
-  assert.equal(fs.existsSync(path.join(ctx.storageDir, shard, 'round-trip.data')), false);
+  assert.equal(fs.existsSync(path.join(ctx.storageDir, shard, 'round-trip.blob')), false);
   await request(ctx.baseUrl).get('/blobs/round-trip').expect(404);
 });
 
@@ -44,11 +53,11 @@ test('distinct ids land in their own computed shard folders', async (t) => {
   const shardsUsed = new Set(fs.readdirSync(ctx.storageDir).filter((name) => name !== '.tmp'));
   assert.ok(shardsUsed.size > 1, 'expected ids to spread across more than one shard folder');
   for (const id of ids) {
-    assert.equal(fs.existsSync(path.join(ctx.storageDir, shardFor(id), `${id}.data`)), true);
+    assert.equal(fs.existsSync(path.join(ctx.storageDir, shardFor(id), `${id}.blob`)), true);
   }
 });
 
-test('overwriting a blob keeps both its files in the same shard, with no leftovers elsewhere', async (t) => {
+test('overwriting a blob keeps it as a single file in the same shard, with no leftovers elsewhere', async (t) => {
   const ctx = await createTestApp();
   t.after(ctx.cleanup);
 
@@ -59,8 +68,8 @@ test('overwriting a blob keeps both its files in the same shard, with no leftove
   assert.deepEqual(res.body, Buffer.from('v2-longer'));
 
   const shard = shardFor('overwrite-me');
-  const shardFiles = fs.readdirSync(path.join(ctx.storageDir, shard)).sort();
-  assert.deepEqual(shardFiles, ['overwrite-me.data', 'overwrite-me.meta.json']);
+  const shardFiles = fs.readdirSync(path.join(ctx.storageDir, shard));
+  assert.deepEqual(shardFiles, ['overwrite-me.blob']);
 });
 
 test('a fresh instance correctly sums MAX_BLOBS_TOTAL usage across multiple shard folders left by a previous run', async (t) => {

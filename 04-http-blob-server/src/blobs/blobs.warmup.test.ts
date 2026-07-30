@@ -39,7 +39,13 @@ test('overwriting a blob left by a previous run still updates usage correctly', 
   await request(first.baseUrl).post('/blobs/carried-over').send(Buffer.alloc(10, 'x')).expect(204);
   await first.app.close();
 
-  const second = await createTestApp({ maxDiskQuota: 40, storageDir: first.storageDir });
+  // 60 comfortably fits the correct post-overwrite total (~47 bytes: a
+  // shrunk 'carried-over' plus a fresh 10-byte 'room-for-this', each with
+  // its small envelope header overhead) while still being well under what
+  // a buggy implementation would reach if it forgot to subtract the old
+  // size on overwrite (~75) - tight enough to catch that regression,
+  // without hardcoding the envelope format's exact byte count.
+  const second = await createTestApp({ maxDiskQuota: 60, storageDir: first.storageDir });
   t.after(second.cleanup);
 
   // Shrinking overwrite of the carried-over blob must correctly subtract
