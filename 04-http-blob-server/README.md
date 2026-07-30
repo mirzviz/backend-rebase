@@ -2,12 +2,13 @@
 
 An HTTP server for storing, retrieving, and deleting binary blobs - plus a restricted set of headers - on the local filesystem: `POST /blobs/{id}`, `GET /blobs/{id}`, `DELETE /blobs/{id}`.
 
-Implements **Level 1** (mandatory) and **Level 2** (streaming + crash consistency). Level 3 (folder sharding) is not implemented - see Status below.
+Implements **Level 1** (mandatory), **Level 2** (streaming + crash consistency), and **Level 3** (folder sharding).
 
 ## Approach
 
 - **Framework**: NestJS + Express - allowed explicitly by the assignment, at the cost of real runtime dependencies (unlike the other exercises in this repo, which ship zero `node_modules`).
-- **Storage ([`blobs.service.ts`](src/blobs/blobs.service.ts))**: each blob is two sibling files under `storage/`: `<id>.data` (raw bytes) and `<id>.meta.json` (stored headers). The `id` is used directly as the filename - already restricted to `a-zA-Z0-9._-`, so no separate index is needed.
+- **Storage ([`blobs.service.ts`](src/blobs/blobs.service.ts), [`sharding.ts`](src/blobs/sharding.ts))**: each blob is two sibling files - `<id>.data` (raw bytes) and `<id>.meta.json` (stored headers) - inside a shard folder computed as `sha256(id).slice(0, 3)`, e.g. `storage/734/hello.txt.data`. The `id` is used directly as the filename - already restricted to `a-zA-Z0-9._-` - so no separate index is needed anywhere, including for sharding: every read/write/delete recomputes the same shard path from `id` alone.
+- **Sharding math (Level 3 / `MAX_BLOBS_IN_FOLDER`)**: 3 hex digits = 4096 shard folders. At `MAX_BLOBS_TOTAL` = 1,000,000, mean occupancy per folder is ~244, about 48 standard deviations below the 1000 cap under a uniform hash - real-world variance across folders is a non-issue. The prefix length is derived from fixed literals in `sharding.ts`, not from the (env-overridable) `BlobLimits`: since there's no index, changing the bucket count while blobs already exist under the old one would silently orphan them (lookups would recompute a different path and simply not find the file). Shard folders are created lazily on first write (`mkdir(shardDir, { recursive: true })`), not pre-created at startup - matches the existing lazy `mkdir` pattern and avoids cluttering a fresh `storage/` with 4096 empty folders.
 - **Headers ([`blobs.controller.ts`](src/blobs/blobs.controller.ts))**: only `Content-Type` and `x-rebase-*` (case-insensitive) are extracted and stored; everything else is dropped before validation or storage.
 - **Validation ([`blobs.service.ts`](src/blobs/blobs.service.ts))**: `Content-Length`, payload size, id, and header rules are all enforced in `BlobsService.put()`.
 - **Quota & count**: kept as in-memory running totals, seeded once at startup by scanning `storageDir` (the assignment's "warm up" phase) and updated incrementally on every write/delete rather than rescanned per request. Overwrites correctly account for the size they're *replacing*, not just the size they add.
@@ -50,6 +51,6 @@ The bind mount is what makes blobs persist across container restarts - the conta
 
 ## Status / known gaps
 
-- **Level 3 (folder sharding) is not implemented.** Would add a hash-of-id shard subdirectory under `MAX_BLOBS_IN_FOLDER`, computed the same deterministic way on every read/write/delete.
+- **Upgrading an existing pre-Level-3 `storage/` in place isn't handled.** Blobs written before sharding was added sit as flat files directly under `storage/`; the warm-up scan now expects every top-level entry (other than `.tmp`) to be a shard folder, so old flat blobs would neither be found nor counted. Not required by the assignment, and `storage/` is gitignored scratch data in this repo anyway.
 - **Overwrites commit via two separate renames** (data, then headers), not one - a crash in the narrow window between them could pair new data with old headers. Accepted trade-off, given that window sits after the much larger data-streaming window this design already protects.
 - **`507` for quota/count violations is a judgment call** - the assignment doesn't specify a status code for these errors.
