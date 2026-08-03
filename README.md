@@ -8,3 +8,4 @@ Backend Rebase course assignments. Each exercise lives in its own numbered folde
 - [02 - Hash-Map](02-hash-map/) — a hash-map class with an injectable hash function, upsert/get/remove, and a bounded size limit.
 - [03 - Large Scale Primality Test](03-large-scale-primality-test/) — count primes across a huge file of integers using a pull-based worker pool over all CPU cores.
 - [04 - HTTP Blob Server](04-http-blob-server/) — a NestJS HTTP server for storing/retrieving/deleting binary blobs and headers on the filesystem, built test-first (Level 1).
+- [05 - HTTP Proxy](05-http-proxy/) — a generic HTTP forward proxy supporting GET requests, forwarding headers with the required exclusions (Level 1).
