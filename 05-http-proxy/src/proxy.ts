@@ -1,4 +1,5 @@
 import { IncomingMessage, ServerResponse, request as httpRequest } from 'http';
+import { pipeline } from 'stream/promises';
 import { stripHopByHopHeaders } from './headers';
 
 export function handleRequest(clientReq: IncomingMessage, clientRes: ServerResponse): void {
@@ -34,24 +35,29 @@ export function handleRequest(clientReq: IncomingMessage, clientRes: ServerRespo
       method: 'GET',
       headers: stripHopByHopHeaders(clientReq.headers),
     },
-    (upstreamRes) => {
-      const chunks: Buffer[] = [];
-      upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk));
-      upstreamRes.on('end', () => {
-        const body = Buffer.concat(chunks);
-        const responseHeaders = stripHopByHopHeaders(upstreamRes.headers);
-        // Recomputed rather than trusted as-is: the origin's own value may be
-        // absent (chunked responses carry no Content-Length) now that we've
-        // stripped Transfer-Encoding, or simply stale for any other reason -
-        // but since Level 1 buffers the whole body, the true length is free.
-        responseHeaders['content-length'] = String(body.length);
-        clientRes.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
-        clientRes.end(body);
-      });
+    async (upstreamRes) => {
+      // Headers are committed as soon as the origin's arrive, before the body
+      // is known to have finished - that's what makes streaming possible, but
+      // it also means a later origin error can no longer become a clean error
+      // status: the client has already been told "200 OK" (or whatever) by then.
+      clientRes.writeHead(upstreamRes.statusCode ?? 502, stripHopByHopHeaders(upstreamRes.headers));
+
+      try {
+        // Relays chunks as they arrive instead of buffering the whole body,
+        // and - unlike a raw .pipe() - tears down both streams if either side
+        // errors mid-transfer, instead of leaking a dangling connection.
+        await pipeline(upstreamRes, clientRes);
+      } catch (err) {
+        clientRes.destroy();
+      }
     },
   );
 
   upstreamReq.on('error', (err) => {
+    if (clientRes.headersSent) {
+      clientRes.destroy();
+      return;
+    }
     clientRes.writeHead(502, { 'content-type': 'text/plain' });
     clientRes.end(`Bad gateway: ${err.message}\n`);
   });
