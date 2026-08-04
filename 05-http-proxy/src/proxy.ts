@@ -2,10 +2,14 @@ import { IncomingMessage, ServerResponse, request as httpRequest } from 'http';
 import { pipeline } from 'stream/promises';
 import { stripHopByHopHeaders } from './headers';
 
+function responseWithError(res: ServerResponse, statusCode: number, message: string): void {
+  res.writeHead(statusCode, { 'content-type': 'text/plain' });
+  res.end(`${message}\n`);
+}
+
 export function handleRequest(clientReq: IncomingMessage, clientRes: ServerResponse): void {
   if (clientReq.method !== 'GET') {
-    clientRes.writeHead(405, { 'content-type': 'text/plain' });
-    clientRes.end('Only GET requests are supported\n');
+    responseWithError(clientRes, 405, 'Only GET requests are supported');
     return;
   }
 
@@ -16,14 +20,12 @@ export function handleRequest(clientReq: IncomingMessage, clientRes: ServerRespo
   try {
     target = new URL(clientReq.url ?? '');
   } catch {
-    clientRes.writeHead(400, { 'content-type': 'text/plain' });
-    clientRes.end('Expected an absolute URL as the request target\n');
+    responseWithError(clientRes, 400, 'Expected an absolute URL as the request target');
     return;
   }
 
   if (target.protocol !== 'http:') {
-    clientRes.writeHead(502, { 'content-type': 'text/plain' });
-    clientRes.end(`Unsupported protocol: ${target.protocol}\n`);
+    responseWithError(clientRes, 502, `Unsupported protocol: ${target.protocol}`);
     return;
   }
 
@@ -58,8 +60,7 @@ export function handleRequest(clientReq: IncomingMessage, clientRes: ServerRespo
       clientRes.destroy();
       return;
     }
-    clientRes.writeHead(502, { 'content-type': 'text/plain' });
-    clientRes.end(`Bad gateway: ${err.message}\n`);
+    responseWithError(clientRes, 502, `Bad gateway: ${err.message}`);
   });
 
   upstreamReq.end();
