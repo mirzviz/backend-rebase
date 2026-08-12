@@ -1,6 +1,7 @@
 node_modules/
 dist/
 storage/
+.env
 .DS_Store
 input_100mb.txt
 input_100mb.txt.7z
