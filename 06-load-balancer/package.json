@@ -1,0 +1,31 @@
+{
+  "name": "load-balancer",
+  "version": "1.0.0",
+  "description": "A simplified load balancer routing blob requests to registered backend nodes",
+  "main": "dist/src/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/main.js",
+    "test": "tsc && node --test \"dist/test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "logzio-nodejs": "^2.5.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "^11.0.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
