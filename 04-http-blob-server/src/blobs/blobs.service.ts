@@ -13,6 +13,7 @@ import {
   PayloadTooLargeException,
 } from '@nestjs/common';
 import { BLOB_CONFIG, BlobLimits } from '../config';
+import { Logger, LOGGER } from '../logging';
 import { shardFor } from './sharding';
 import { encodeHeaderPrefix, readHeaderPrefix } from './envelope';
 
@@ -38,7 +39,10 @@ export class BlobsService implements OnModuleInit {
   private usageBytes = 0;
   private blobCount = 0;
 
-  constructor(@Inject(BLOB_CONFIG) private readonly limits: BlobLimits) {}
+  constructor(
+    @Inject(BLOB_CONFIG) private readonly limits: BlobLimits,
+    @Inject(LOGGER) private readonly logger: Logger,
+  ) {}
 
   // Nest runs this once per process, before the app starts listening
   // (app.listen() only happens after all onModuleInit hooks resolve) -
@@ -65,6 +69,12 @@ export class BlobsService implements OnModuleInit {
     }
     this.usageBytes = usage;
     this.blobCount = count;
+
+    this.logger.log('info', 'storage warm-up complete', {
+      storageDir: this.limits.storageDir,
+      blobCount: this.blobCount,
+      usageBytes: this.usageBytes,
+    });
   }
 
   async put(
@@ -94,9 +104,19 @@ export class BlobsService implements OnModuleInit {
     // number. If the write below ultimately fails, the reservation is
     // rolled back in the catch block.
     if (isNewBlob && this.blobCount >= this.limits.maxBlobsTotal) {
+      this.logger.log('warn', 'blob rejected: MAX_BLOBS_TOTAL reached', {
+        id,
+        blobCount: this.blobCount,
+        maxBlobsTotal: this.limits.maxBlobsTotal,
+      });
       throw new HttpException('storing this blob would exceed MAX_BLOBS_TOTAL', 507);
     }
     if (this.usageBytes - oldSize + declaredNewSize > this.limits.maxDiskQuota) {
+      this.logger.log('warn', 'blob rejected: MAX_DISK_QUOTA reached', {
+        id,
+        wouldUseBytes: this.usageBytes - oldSize + declaredNewSize,
+        maxDiskQuota: this.limits.maxDiskQuota,
+      });
       throw new HttpException('storing this blob would exceed MAX_DISK_QUOTA', 507);
     }
     this.usageBytes += declaredNewSize - oldSize;
@@ -116,6 +136,13 @@ export class BlobsService implements OnModuleInit {
       // missing headers. It either lands completely or not at all.
       await fsp.rename(tempPath, blobPath);
       // Totals were already reserved above - nothing left to update here.
+      this.logger.log('info', 'blob stored', {
+        id,
+        bytes: declaredNewSize,
+        overwrite: !isNewBlob,
+        blobCount: this.blobCount,
+        usageBytes: this.usageBytes,
+      });
     } catch (err) {
       await fsp.rm(tempPath, { force: true });
       // The write never actually landed - give back the reservation.
@@ -159,6 +186,8 @@ export class BlobsService implements OnModuleInit {
       this.usageBytes -= size;
       this.blobCount -= 1;
     }
+
+    this.logger.log('info', 'blob deleted', { id, existed, blobCount: this.blobCount });
   }
 
   // Streams the request body straight to disk instead of buffering it in

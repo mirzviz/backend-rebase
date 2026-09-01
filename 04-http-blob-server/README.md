@@ -2,7 +2,7 @@
 
 An HTTP server for storing, retrieving, and deleting binary blobs - plus a restricted set of headers - on the local filesystem: `POST /blobs/{id}`, `GET /blobs/{id}`, `DELETE /blobs/{id}`.
 
-Implements **Level 1** (mandatory), **Level 2** (streaming + crash consistency), and **Level 3** (folder sharding), plus the [06-load-balancer](../06-load-balancer/) assignment's optional **auto-registration** (self-announce to a load balancer on startup).
+Implements **Level 1** (mandatory), **Level 2** (streaming + crash consistency), and **Level 3** (folder sharding), plus the [06-load-balancer](../06-load-balancer/) assignment's optional **auto-registration** (self-announce to a load balancer on startup). Structured JSON logging with optional Logz.io shipping.
 
 ## Approach
 
@@ -20,6 +20,7 @@ Implements **Level 1** (mandatory), **Level 2** (streaming + crash consistency),
 - **Streaming**: POST/GET pipe the request/response body directly (`pipeline()`) instead of buffering it in memory, so memory use doesn't scale with blob size.
 - **Crash consistency**: uploads are written to a `.tmp/` staging directory (same filesystem as `storage/`, so the commit is an atomic `rename()`) and only take their real name once fully written. A broken upload or a killed process never leaves a partial blob visible; `.tmp/` is excluded from all quota/count scans, and wiped at startup to clear any leftovers from a crash.
 - **Auto-registration ([`autoRegistration.ts`](src/autoRegistration.ts))**: optional, opt-in via `MASTER_NODE_ADDRESS`. On startup, after the HTTP server is listening, the process `POST`s `{destination, name}` to the load balancer's `/internal/nodes`. It's fire-and-forget - the blob server is fully usable standalone, so a missing, slow, or misconfigured load balancer never blocks startup or crashes the process. A refused connection or a per-attempt timeout means "the load balancer isn't up yet"; those are retried for `SELF_REGISTRATION_RETRY_SECONDS` (spec: 30) before giving up. A `4xx` (bad payload, or the registration window already closed) is *not* retried - it can't succeed on a repeat. The registration client is a plain async function taking an injectable logger and (in tests) `fetch`, so it's exercised against a throwaway fake load balancer without Nest or real timers.
+- **Logging ([`logging.ts`](src/logging.ts), [`logging.interceptor.ts`](src/logging.interceptor.ts))**: structured JSON, one line per event. `createLogger` always writes to the console; if `LOGZIO_TOKEN` is set it *also* ships every line to Logz.io, fire-and-forget and wrapped in try/catch so a shipping failure degrades to "we lost a log line", never a broken request. Same design as [06-load-balancer](../06-load-balancer/); the logger, its `LogzioConfig`, and the `LOGGER` DI token are copied rather than shared, since each exercise folder is self-contained. A global `RequestLoggingInterceptor` logs `method/path/status/durationMs` for every request (hooking the response's `finish`/`close` events, so the status is the real final code even on streamed GETs and exception-filter 404s); `BlobsService` logs the domain events the access log can't explain on its own - warm-up totals, and *why* a `507` happened (which limit, current vs. max).
 
 ## Auto-registration
 
@@ -33,6 +34,18 @@ Set `MASTER_NODE_ADDRESS` to have this server announce itself to a running [load
 | `SELF_REGISTRATION_RETRY_SECONDS` | `30` | Total budget for retrying while the load balancer isn't answering. |
 
 The advertised port is always `PORT` (the port the server actually listens on), so it's never configured separately.
+
+## Logging
+
+Console logging is always on. Set `LOGZIO_TOKEN` to also ship every log line to Logz.io; omit it to stay console-only. `main.ts` loads a `.env` file (via `dotenv`) before anything else runs - `.env` is gitignored, only [`.env.example`](.env.example) is tracked.
+
+| Env var | Default | Notes |
+| --- | --- | --- |
+| `LOGZIO_TOKEN` | unset | Logz.io shipping token. Omit to run console-only. |
+| `LOGZIO_TYPE` | `blob-server` | |
+| `LOGZIO_PROTOCOL` | `https` | |
+| `LOGZIO_PORT` | `8071` | |
+| `LOGZIO_HOST` | `listener.logz.io` | Override per account region, e.g. `listener-eu.logz.io` |
 
 ```bash
 # terminal 1 - the load balancer, 20s registration window
@@ -59,7 +72,7 @@ node dist/main.js
 
 ### Tests
 
-`node:test` against a real NestJS testing module, with a throwaway temp directory per test. Covers the full request/validation surface, streaming behavior, crash consistency, startup warm-up, concurrency safety, and auto-registration (against a fake load balancer: success, retry-then-succeed, per-attempt timeout, give-up after the budget, and no-retry on `4xx`).
+`node:test` against a real NestJS testing module, with a throwaway temp directory per test. Covers the full request/validation surface, streaming behavior, crash consistency, startup warm-up, concurrency safety, auto-registration (against a fake load balancer: success, retry-then-succeed, per-attempt timeout, give-up after the budget, and no-retry on `4xx`), and logging (the shipper try/catch guard, config parsing, and the interceptor's status/level mapping). The test harness swaps in a silent logger so the console shipper doesn't bury test output.
 
 ```bash
 npm test
@@ -72,9 +85,13 @@ Two-stage build: TypeScript compiles in a `build` stage; the runtime stage insta
 ```bash
 docker build -t http-blob-server .
 docker run --rm -p 3000:3000 -v "$(pwd)/storage:/app/storage" http-blob-server
+# with Logz.io shipping and auto-registration:
+docker run --rm -p 3000:3000 -v "$(pwd)/storage:/app/storage" \
+  -e LOGZIO_TOKEN=... -e MASTER_NODE_ADDRESS=load-balancer:3000 -e ADVERTISED_HOST=blob-1 \
+  http-blob-server
 ```
 
-The bind mount is what makes blobs persist across container restarts - the container itself is disposable, `./storage` on the host is not.
+The bind mount is what makes blobs persist across container restarts - the container itself is disposable, `./storage` on the host is not. `dotenv` reads a `.env` file when present, but it isn't copied into the image - pass config with `-e` instead.
 
 ## Status / known gaps
 

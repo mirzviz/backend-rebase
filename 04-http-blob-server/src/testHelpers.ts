@@ -6,6 +6,13 @@ import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { AppModule } from './app.module';
 import { BLOB_CONFIG, BlobLimits, defaultBlobLimits } from './config';
+import { Logger, LOGGER } from './logging';
+
+// Tests exercise real request paths constantly; the console-shipping logger
+// from SharedModule would bury the test output in JSON. Swap in a silent
+// one - the logger's own behaviour is covered by logging.test.ts and
+// logging.interceptor.test.ts directly.
+const silentLogger: Logger = { log: () => {} };
 
 export interface TestApp {
   app: INestApplication;
@@ -27,6 +34,8 @@ export async function createTestApp(overrides: Partial<BlobLimits> = {}): Promis
   const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(BLOB_CONFIG)
     .useValue(limits)
+    .overrideProvider(LOGGER)
+    .useValue(silentLogger)
     .compile();
 
   const app = moduleRef.createNestApplication({ bodyParser: false });

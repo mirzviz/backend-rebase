@@ -1,14 +1,11 @@
 import { Module } from '@nestjs/common';
-import { BLOB_CONFIG, defaultBlobLimits } from '../config';
 import { BlobsController } from './blobs.controller';
 import { BlobsService } from './blobs.service';
 
+// BLOB_CONFIG and LOGGER come from the @Global() SharedModule.
 @Module({
   controllers: [BlobsController],
-  providers: [
-    BlobsService,
-    { provide: BLOB_CONFIG, useFactory: defaultBlobLimits },
-  ],
+  providers: [BlobsService],
   exports: [BlobsService],
 })
 export class BlobsModule {}

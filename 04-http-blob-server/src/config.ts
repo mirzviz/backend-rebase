@@ -1,5 +1,7 @@
 import * as path from 'node:path';
 
+type Env = Partial<Record<string, string>>;
+
 export interface BlobLimits {
   maxPayloadLength: number;
   maxDiskQuota: number;
@@ -13,8 +15,8 @@ export interface BlobLimits {
 
 export const BLOB_CONFIG = Symbol('BLOB_CONFIG');
 
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
+function envInt(name: string, fallback: number, env: Env = process.env): number {
+  const raw = env[name];
   if (raw === undefined || raw === '') return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -33,5 +35,33 @@ export function defaultBlobLimits(): BlobLimits {
     maxIdLength: envInt('MAX_ID_LENGTH', 200),
     maxBlobsTotal: envInt('MAX_BLOBS_TOTAL', 1_000_000),
     storageDir: process.env.STORAGE_DIR ?? path.join(process.cwd(), 'storage'),
+  };
+}
+
+// -------------------------------------------------------------------------
+// Logz.io shipping (mirrors 06-load-balancer's setup)
+// -------------------------------------------------------------------------
+
+export interface LogzioConfig {
+  token: string;
+  type: string;
+  protocol: string;
+  port: number;
+  host: string;
+}
+
+// Logz.io is additive observability, not a boot requirement - unlike a hard
+// `throw` when LOGZIO_TOKEN is missing, staying console-only lets the blob
+// server run locally/in tests without anyone needing an account first.
+export function loadLogzioConfig(env: Env = process.env): LogzioConfig | null {
+  const token = env.LOGZIO_TOKEN;
+  if (!token) return null;
+
+  return {
+    token,
+    type: env.LOGZIO_TYPE ?? 'blob-server',
+    protocol: env.LOGZIO_PROTOCOL ?? 'https',
+    port: envInt('LOGZIO_PORT', 8071, env),
+    host: env.LOGZIO_HOST ?? 'listener.logz.io',
   };
 }
