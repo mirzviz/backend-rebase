@@ -2,7 +2,7 @@
 
 A simplified load balancer that routes blob requests (`POST/GET/DELETE /blobs/{id}`) to a set of backend nodes registered through an internal API, instead of storing anything itself. A "node" is a running instance of [04-http-blob-server](../04-http-blob-server/).
 
-Implements the mandatory parts of the assignment only - no circuit breaker, no auto-registration.
+Implements the mandatory parts of the assignment, plus the optional **auto-registration** (on the blob-server side - see [04-http-blob-server](../04-http-blob-server/#auto-registration)). No circuit breaker.
 
 ## Approach
 
@@ -56,4 +56,4 @@ npm test
 ## Status / known gaps
 
 - **No circuit breaker.** A node that's down or timing out is retried on every request; there's no per-node failure tracking or cooldown.
-- **No auto-registration.** 04-http-blob-server doesn't read `MASTER_NODE_ADDRESS` or self-register; nodes must be registered manually via `POST /internal/nodes` during the registration window.
+- **Auto-registration lives on the node, not here.** [04-http-blob-server](../04-http-blob-server/#auto-registration) reads `MASTER_NODE_ADDRESS` and self-registers against this server's `POST /internal/nodes` on startup (retrying for 30s while this server isn't up yet). Nodes can still be registered manually instead, during the registration window.

@@ -2,7 +2,7 @@
 
 An HTTP server for storing, retrieving, and deleting binary blobs - plus a restricted set of headers - on the local filesystem: `POST /blobs/{id}`, `GET /blobs/{id}`, `DELETE /blobs/{id}`.
 
-Implements **Level 1** (mandatory), **Level 2** (streaming + crash consistency), and **Level 3** (folder sharding).
+Implements **Level 1** (mandatory), **Level 2** (streaming + crash consistency), and **Level 3** (folder sharding), plus the [06-load-balancer](../06-load-balancer/) assignment's optional **auto-registration** (self-announce to a load balancer on startup).
 
 ## Approach
 
@@ -19,6 +19,32 @@ Implements **Level 1** (mandatory), **Level 2** (streaming + crash consistency),
 - **Config ([`config.ts`](src/config.ts))**: every limit is env-var overridable with the assignment's defaults, injected via NestJS DI - lets tests use tiny limits instead of writing gigabytes of data.
 - **Streaming**: POST/GET pipe the request/response body directly (`pipeline()`) instead of buffering it in memory, so memory use doesn't scale with blob size.
 - **Crash consistency**: uploads are written to a `.tmp/` staging directory (same filesystem as `storage/`, so the commit is an atomic `rename()`) and only take their real name once fully written. A broken upload or a killed process never leaves a partial blob visible; `.tmp/` is excluded from all quota/count scans, and wiped at startup to clear any leftovers from a crash.
+- **Auto-registration ([`autoRegistration.ts`](src/autoRegistration.ts))**: optional, opt-in via `MASTER_NODE_ADDRESS`. On startup, after the HTTP server is listening, the process `POST`s `{destination, name}` to the load balancer's `/internal/nodes`. It's fire-and-forget - the blob server is fully usable standalone, so a missing, slow, or misconfigured load balancer never blocks startup or crashes the process. A refused connection or a per-attempt timeout means "the load balancer isn't up yet"; those are retried for `SELF_REGISTRATION_RETRY_SECONDS` (spec: 30) before giving up. A `4xx` (bad payload, or the registration window already closed) is *not* retried - it can't succeed on a repeat. The registration client is a plain async function taking an injectable logger and (in tests) `fetch`, so it's exercised against a throwaway fake load balancer without Nest or real timers.
+
+## Auto-registration
+
+Set `MASTER_NODE_ADDRESS` to have this server announce itself to a running [load balancer](../06-load-balancer/) instead of being registered by hand. All four vars are unused unless `MASTER_NODE_ADDRESS` is set.
+
+| Env var | Default | Notes |
+| --- | --- | --- |
+| `MASTER_NODE_ADDRESS` | unset | `host:port` of the load balancer's internal API. Setting it turns the feature on. An `http://` prefix is tolerated. |
+| `ADVERTISED_HOST` | `localhost` | The host the load balancer should use to reach this server. The load balancer only accepts `a-zA-Z0-9_-` (≤50 chars), so this must be a bare name (`localhost`, a docker service name), never a dotted IP. |
+| `NODE_NAME` | unset | Optional `name` for the node. Same character rules as `ADVERTISED_HOST`. |
+| `SELF_REGISTRATION_RETRY_SECONDS` | `30` | Total budget for retrying while the load balancer isn't answering. |
+
+The advertised port is always `PORT` (the port the server actually listens on), so it's never configured separately.
+
+```bash
+# terminal 1 - the load balancer, 20s registration window
+cd 06-load-balancer && PORT=3000 node dist/src/main.js
+
+# terminal 2 - a blob server that registers itself within that window
+cd 04-http-blob-server && PORT=4100 MASTER_NODE_ADDRESS=localhost:3000 NODE_NAME=blob-1 node dist/main.js
+
+# terminal 3 - once the window closes, route a blob through the load balancer
+curl -X POST localhost:3000/blobs/hello --data-binary 'world'
+curl localhost:3000/blobs/hello   # -> world, served from the blob server on :4100
+```
 
 ## Running it
 
@@ -33,7 +59,7 @@ node dist/main.js
 
 ### Tests
 
-`node:test` against a real NestJS testing module, with a throwaway temp directory per test. Covers the full request/validation surface, streaming behavior, crash consistency, startup warm-up, and concurrency safety.
+`node:test` against a real NestJS testing module, with a throwaway temp directory per test. Covers the full request/validation surface, streaming behavior, crash consistency, startup warm-up, concurrency safety, and auto-registration (against a fake load balancer: success, retry-then-succeed, per-attempt timeout, give-up after the budget, and no-retry on `4xx`).
 
 ```bash
 npm test
