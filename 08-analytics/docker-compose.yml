@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: analytics
+    ports:
+      - '5432:5432'
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    command: ['node', 'dist/src/main.js']
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/analytics
+      PORT: 3000
+    ports:
+      - '3000:3000'
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Standalone loop process, not part of the api - see docs/design.md for
+  # why aggregation is decoupled from ingestion. Same image as `api`, just
+  # a different entrypoint script.
+  cleaner:
+    build: .
+    command: ['node', 'dist/src/cleaner/main.js']
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/analytics
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:

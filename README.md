@@ -10,3 +10,4 @@ Backend Rebase course assignments. Each exercise lives in its own numbered folde
 - [04 - HTTP Blob Server](04-http-blob-server/) — a NestJS HTTP server for storing/retrieving/deleting binary blobs and headers on the filesystem, built test-first (Levels 1–3), with structured logging (optional Logz.io shipping) and optional self-registration to a load balancer.
 - [05 - HTTP Proxy](05-http-proxy/) — a generic HTTP forward proxy supporting GET requests, forwarding headers with the required exclusions (Level 1).
 - [06 - Load Balancer](06-load-balancer/) — routes blob requests to registered backend nodes via deterministic id-based hashing, with a time-boxed node registration window.
+- [08 - Analytics (Part 1)](08-analytics/) — page-view analytics with increment/report APIs backed by a raw-event table and an hourly aggregate table, kept in sync by a standalone cleaner process.
